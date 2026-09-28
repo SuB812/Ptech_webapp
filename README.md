@@ -4,7 +4,8 @@
 (RAG 지식베이스)와 대조해 **충족 / 보완 필요 / 확인 필요** 를 근거와 함께 판정한 뒤,
 기술규격 대응표·제출서류 체크리스트·기술질의서 초안을 생성하는 업무 지원 시스템.
 
-> **현재 상태: 명세 작성 완료, 구현 미착수.**
+> **현재 상태: Phase 2 완료 (데이터 모델). DB 마이그레이션 적용, 백엔드 테스트 86개.**
+> 다음 작업은 Phase 3 (부모-자식 청킹). 개발 순서는 [specs/12-dev-plan.md](specs/12-dev-plan.md).
 > 구현을 시작하기 전에 [CLAUDE.md](CLAUDE.md) 와 [specs/](specs/) 를 읽는다.
 
 ---
@@ -71,6 +72,7 @@ Vue.js SPA ──HTTP/JSON──▶ Django REST Framework ──Django ORM──
 | [specs/09-acceptance-tests.md](specs/09-acceptance-tests.md) | **정답표 13개, 함정 4개, 정확도 측정** |
 | [specs/10-output-templates.md](specs/10-output-templates.md) | 대응표·체크리스트·기술질의서·Excel 양식 |
 | [specs/11-dev-setup.md](specs/11-dev-setup.md) | 로컬 환경 구성, 실행, 트러블슈팅 |
+| [specs/12-dev-plan.md](specs/12-dev-plan.md) | **개발 계획 13 Phase** — Phase 별 목표·파일·명령·완료 조건 |
 
 ## 샘플 데이터
 
@@ -123,27 +125,37 @@ TRAP-2는 항목별 독립 판정 구조에서 **원리적으로 못 잡는다.*
 
 전체 절차와 트러블슈팅은 [specs/11-dev-setup.md](specs/11-dev-setup.md).
 
+`psql` 은 PATH 에 없다. 전체 경로를 쓴다.
+
 ```powershell
 # 0) 환경변수
-Copy-Item .env.example .env     # OPENAI_API_KEY, POSTGRES_*, DJANGO_SECRET_KEY 채우기
+Copy-Item .env.example .env     # OPENAI_API_KEY, POSTGRES_PASSWORD 채우기
+                                # DJANGO_SECRET_KEY 는 아래 명령으로 생성
+# python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"
 
-# 1) DB (psql, 슈퍼유저)
-#    CREATE DATABASE ptech ENCODING 'UTF8';
-#    \c ptech
-#    CREATE EXTENSION vector;  CREATE EXTENSION pg_trgm;
+# 1) DB · role · 확장
+#    ptech 비밀번호는 환경변수로 넘긴다 — 파일·명령줄·히스토리에 남지 않는다
+$sec = Read-Host -AsSecureString 'New password for the ptech role'
+$env:PTECH_DB_PASSWORD = [System.Net.NetworkCredential]::new('', $sec).Password
+& 'C:\Program Files\PostgreSQL\16\bin\psql.exe' -U postgres -h localhost -f backend\db_init.sql
+Remove-Item Env:\PTECH_DB_PASSWORD
+#    -1 / --single-transaction 과 함께 쓰지 말 것 (CREATE DATABASE 는 트랜잭션 불가)
+#    이 스크립트는 template1 에도 확장을 넣는다 — pytest 의 테스트 DB 생성에 필수다
+#    (vector 는 trusted 확장이 아니라 슈퍼유저만 설치할 수 있다. specs/11 2.4절)
 
 # 2) 백엔드
 cd backend
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver          # http://localhost:8000
+pytest                              # Phase 1 검증 — DB·API 키 없이 돈다
+python manage.py migrate            # Phase 2 이후
+python manage.py runserver          # http://localhost:8000/api/
 
-# 3) 지식베이스 적재 (별도 터미널)
+# 3) 지식베이스 적재 (Phase 4 이후, OPENAI_API_KEY 필요)
 python manage.py load_knowledge ../samples/03_자사_제품카탈로그.md --kind catalog
 python manage.py load_knowledge ../samples/04_자사_인증_시험_실적.md --kind qa
 
-# 4) 프론트엔드 (별도 터미널)
+# 4) 프론트엔드 (Phase 9 이후, 별도 터미널)
 cd frontend
 npm install
 npm run dev                         # http://localhost:5173
@@ -151,24 +163,31 @@ npm run dev                         # http://localhost:5173
 
 `.env` 는 **절대 커밋하지 않는다.** `.gitignore` 에 이미 포함되어 있다.
 
+### API 키가 필요한 시점
+
+Phase 0~3 은 키 없이 전부 돌아간다. 키는 **Phase 4 의 실제 색인부터** 필요하다.
+테스트는 `pytest.ini` 가 `LLM_FAKE=True` 를 강제하고 `llm` 마커를 제외하므로 항상 키 없이 돈다.
+실제 호출 테스트는 `pytest -m llm` 으로 따로 돌린다 (비용 발생).
+
 ## 구현 진행 상황
 
-| 영역 | FR | 상태 |
-|---|---|---|
-| 프로젝트 명세 | — | ✅ 완료 |
-| DB 스키마 / 마이그레이션 | — | ⬜ |
-| PDF 텍스트·표 추출 | FR-01, 02 | ⬜ |
-| 요구사항 자동 추출 | FR-03 ~ 05 | ⬜ |
-| 요구사항 분류·검토 화면 | FR-06, 07 | ⬜ |
-| 지식베이스 업로드·청킹·임베딩 | FR-08, 09 | ⬜ |
-| 하이브리드 검색 | FR-10 ~ 12 | ⬜ |
-| 항목별 대조 판정 | FR-13 ~ 15 | ⬜ |
-| 교차조항 검증 | FR-16 | ⬜ |
-| 판정 수정 | FR-17 | ⬜ |
-| 대응표·체크리스트·기술질의서 생성 | FR-18 ~ 20 | ⬜ |
-| Excel / Markdown 다운로드 | FR-21 | ⬜ |
-| 입찰 건·실행 이력 관리 | FR-22, 23 | ⬜ |
-| 정확도 측정 | FR-24 | ⬜ |
+| 영역 | FR | Phase | 상태 |
+|---|---|---|---|
+| 프로젝트 명세 + 개발 계획 | — | — | ✅ 완료 |
+| 백엔드 골격 · 설정 · enum · LLM 래퍼 | — | 0-A | ✅ 완료 |
+| DB · role · 확장 생성 (`db_init.sql`) | — | 0-B | ✅ 완료 |
+| **PDF 텍스트·표 추출 + MD 파싱** | FR-02 | 1 | ✅ 완료 (테스트 48개) |
+| **DB 스키마 / 마이그레이션 / 입찰 건 API** | FR-06, 22 | 2 | ✅ 완료 (테스트 38개) |
+| 부모-자식 청킹 · 키워드 · model_tags | FR-09 | 3 | ⬜ |
+| 임베딩 · 하이브리드 검색 | FR-10 | 4 | ⬜ |
+| 요구사항 자동 추출 | FR-03 ~ 05 | 5 | ⬜ |
+| 항목별 대조 판정 | FR-11, 13, 14, 17 | 6 | ⬜ |
+| 교차조항 검증 · **정확도 측정** | FR-16, 24 | 7 | ⬜ |
+| 대응표·체크리스트·기술질의서 · Excel | FR-18 ~ 21 | 8 | ⬜ |
+| 프론트 골격 · 지식베이스 · 검색 화면 | FR-08, 09, 12 | 9 | ⬜ |
+| 프론트 입찰 건 · 문서 · 요구사항 화면 | FR-01 ~ 07, 22 | 10 | ⬜ |
+| 프론트 결과 · 근거 · 정확도 · 산출물 화면 | FR-13 ~ 24 | 11 | ⬜ |
+| 정확도 튜닝 루프 | — | 12 | ⬜ |
 
 ## 범위 밖 (만들지 않는 것)
 

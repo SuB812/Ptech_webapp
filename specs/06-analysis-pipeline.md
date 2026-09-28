@@ -108,11 +108,23 @@
 - 샘플 기준 **17개 조항** (2.1~2.5, 3.1~3.4, 4.1~4.4, 5.1~5.4) 이 나와야 한다.
   개수가 다르면 경고를 띄운다 (하드 실패는 아니다 — 다른 입찰 건은 조항 수가 다르다).
 
-### 2.4 채점 대상 자동 지정
+### 2.4 채점 대상 지정 — 추출 경로에서 하지 않는다
 
-추출 직후, `answer_key.json` 에 있는 `clause_no` 와 일치하는 요구사항에
-`is_graded=true` 를 설정한다. 이것은 **테스트 편의 기능**이며 판정 로직에
-정답을 노출하지 않는다 (`is_graded` 는 프롬프트에 들어가지 않는다).
+`is_graded` 는 **추출 단계에서 건드리지 않는다.** 추출 직후 `answer_key.json` 을 읽어
+자동으로 켜면 추출 코드가 정답표를 참조하게 되어 `03-data-model.md` 6절의
+"픽스처는 `evaluator.py` 만 읽는다" 원칙이 깨진다.
+
+대신 별도 관리 명령으로 분리한다 (`03-data-model.md` 6.1절).
+
+```powershell
+python manage.py mark_graded --project 1
+```
+
+추출 직후 `Requirement.is_graded` 는 전부 `false` 다. 채점 대상은
+(a) 위 명령으로 지정하거나 (데모·테스트), (b) 사용자가 FR-07 화면에서
+`채점대상` 토글로 지정한다 (실제 입찰 건).
+
+`is_graded` 는 어떤 프롬프트에도 들어가지 않는다.
 
 ---
 
@@ -122,15 +134,26 @@
 
 ### 3.1 검색 쿼리 생성
 
+> **구현 후 개정.** 초안은 `item + requirement_text + context + 모델` 을 하나의 쿼리로
+> 합쳤는데, 실측에서 조항 4.3·4.4 의 근거를 하나도 찾지 못해 TRAP-4 가 도달 불가였다.
+> 확정 규칙과 측정치는 `specs/05-rag-pipeline.md` 5.5절에 있다. 요약:
+>
+> - 의미 쿼리 = `item` 단독 ("무엇인지로 찾고, 무엇이어야 하는지로 판정한다")
+> - 키워드 프로브 = `item + requirement_text`, `item`, `item` 의 `내~` 접두사 변형
+> - 모델은 검색어가 아니라 `model_filter`
+> - `track_record` / `certification` / `submission` 은 모델 필터 면제 (TRAP-3)
+
 ```python
-def build_query(req, project) -> str:
-    parts = [req.item, req.requirement_text]
-    if req.context_text:
-        parts.append(req.context_text[:120])
-    model = extract_model_hint(project.item_name)   # "LED 투광등 150W급" → "LT-150"
-    if model:
-        parts.append(model)
-    return " ".join(p for p in parts if p)
+hits = retriever.retrieve_for_requirement(
+    item=req.item,
+    requirement_text=req.requirement_text,
+    category=req.category,
+    model_hint=extract_model_hint(project.item_name),  # "LED 투광등 150W급" → "LT-150"
+    top_k=run.rag_params["top_k"],
+    threshold=run.rag_params["threshold"],
+    w_semantic=run.rag_params["w_semantic"],
+    w_keyword=run.rag_params["w_keyword"],
+)
 ```
 
 `extract_model_hint` 는 자사 모델 라인업과 공고 품목을 맞춘다. `150W급` → 소비전력 150W대
@@ -138,20 +161,21 @@ def build_query(req, project) -> str:
 숫자를 비교해 결정한다. 확신이 없으면 `None` 을 반환하고 모델 필터를 걸지 않는다
 (잘못된 필터가 근거를 지우는 것보다 낫다).
 
-예시 쿼리:
-- `2.1` → `소비전력 150 W 이하 LT-150`
-- `3.1` → `방수·방진 등급 IP66 이상 설치 장소가 옥외 해안 인근이므로... LT-150`
-- `4.3` → `내염수분무 시험 염해 환경 대응, 240시간 LT-150`
-- `5.4` → `납품실적 최근 5년 발전소 납품실적 3건 이상 LT-150`
+`extract_model_hint` 는 자사 모델 라인업과 공고 품목을 맞춘다. 확신이 없으면 `None` 을
+반환하고 모델 필터를 걸지 않는다 (잘못된 필터가 근거를 지우는 것보다 낫다).
+
+예시 (조항 4.3):
+
+| 역할 | 값 |
+|---|---|
+| 의미 쿼리 | `내염수분무 시험` |
+| 키워드 프로브 | `내염수분무 시험 염해 환경 대응, 240시간` / `내염수분무 시험` / `염수분무 시험` |
+| 모델 필터 | `LT-150` |
 
 ### 3.2 검색 호출
 
-```python
-hits = retriever.search(query, top_k=run.rag_params["top_k"],
-                        threshold=run.rag_params["threshold"],
-                        w_semantic=..., w_keyword=...,
-                        model_filter=model)
-```
+요구사항 1건에 임베딩 호출 1회, 검색 1회다. 키워드 프로브가 여러 개여도 임베딩은
+의미 쿼리 하나에만 쓰이므로 "항목 하나당 검색 한 번" 원칙은 그대로다.
 
 `retrieval_query` 와 `retrieved_chunk_ids` 를 `Assessment` 에 저장해 재현 가능하게 한다.
 

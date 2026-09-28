@@ -53,6 +53,8 @@
 | Excel | openpyxl | |
 | 설정 | python-dotenv | `.env` 로드 |
 | CORS | django-cors-headers | |
+| 테스트 | pytest, pytest-django | |
+| 테스트 환경변수 | pytest-env | `pytest.ini` 의 `env =` 섹션이 이 플러그인 기능이다. 없으면 `LLM_FAKE=True` 가 적용되지 않는다 |
 
 ### 의존성 추가 규칙
 새 패키지가 필요하면 이 표에 한 줄(패키지명 + 왜 필요한지)을 먼저 추가한다.
@@ -149,6 +151,32 @@ Ptech_webapp/
 - 호출마다 `model`, `prompt_name`, `token_usage`, `latency_ms` 를 `AnalysisRun.llm_calls` 에 누적 기록.
 - 프롬프트는 `analysis/prompts/*.txt` 에서 읽고 `.format()` 으로 값을 채운다.
 - 테스트 환경(`settings.LLM_FAKE=True`)에서는 `samples/` 기반 고정 응답을 반환한다.
+
+### 5.1 `LLM_FAKE` 는 임베딩도 포함한다
+
+`LLM_FAKE=True` 일 때 래퍼는 **chat 응답과 임베딩 둘 다** 가짜로 반환한다.
+
+- chat: `analysis/fixtures/llm_responses/` 의 고정 응답 (프롬프트 이름 + 입력 해시)
+- 임베딩: **입력 텍스트 해시 기반 결정적 의사 벡터.** 길이 `EMBEDDING_DIM`,
+  L2 정규화. 같은 텍스트는 항상 같은 벡터를 낸다.
+
+임베딩까지 가짜로 만드는 이유: `09-acceptance-tests.md` §7.1 의
+`test_retriever_keyword_exact` 와 `test_retriever_model_filter` 는 API 키 없이
+돌아야 하는데, 검색에는 쿼리 임베딩이 반드시 필요하다. 임베딩만 실제 호출로 남기면
+이 두 테스트가 CI 에서 실행되지 않는다.
+
+의사 임베딩은 **의미 유사도를 재현하지 않는다.** 따라서 `LLM_FAKE` 로 검증할 수 있는 것은
+다음뿐이다.
+
+| 검증 가능 | 검증 불가 |
+|---|---|
+| 키워드 경로 점수 (`pg_trgm` + `keywords` 배열 정확 매칭) | 의미 검색 순위 품질 |
+| 가중합 결합 공식 | 임계값의 적절성 |
+| 모델 필터 보너스·감점 (×0.3) | 실제 근거 검색 성공률 |
+| `top_k` / `threshold` 컷오프 동작 | 판정 정확도 (`n/13`) |
+| 0건 반환 시 `CHECK` 경로 | |
+
+의미 검색 품질과 정확도는 **실제 키로만 측정한다** (`pytest -m llm`).
 
 ## 6. 설정 (`config/settings.py`)
 

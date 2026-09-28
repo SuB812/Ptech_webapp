@@ -331,11 +331,36 @@ serializer `validate()` 에서 막고, 파이프라인 내부에서는 예외 �
 정답표는 DB 모델이 아니라 **픽스처 파일**로 둔다: `backend/analysis/fixtures/answer_key.json`.
 
 이유: 정답표는 샘플 데이터에 종속된 테스트 자산이고 운영 데이터가 아니다. DB에 넣으면
-"정답을 DB에서 조회해 판정에 참고"하는 오염 경로가 생긴다. 파일로 두고 `evaluator.py` 만
-읽게 한다.
+"정답을 DB에서 조회해 판정에 참고"하는 오염 경로가 생긴다.
 
 형식은 `specs/09-acceptance-tests.md` 4절에 정의한다. `evaluator.py` 는 `clause_no` 로
 `Assessment.ai_verdict` 와 대조한다.
+
+### 6.1 픽스처를 읽을 수 있는 코드 (허용 목록)
+
+`answer_key.json` 을 읽는 것은 다음 둘뿐이다. 그 외 어떤 코드도 이 파일을 참조하지 않는다.
+
+| 코드 | 용도 |
+|---|---|
+| `analysis/services/evaluator.py` | 정확도 채점 (FR-24) |
+| `analysis/management/commands/mark_graded.py` | `Requirement.is_graded` 지정 |
+
+`mark_graded` 를 **별도 관리 명령으로 분리하는 이유**: 원래는 요구사항 추출 직후
+자동으로 `is_graded` 를 켜는 설계였는데(구 `06-analysis-pipeline.md` 2.4),
+그러면 추출 코드가 정답표를 읽게 되어 위 원칙이 깨진다. 추출 경로와 채점 경로를
+파일 단위로 분리해 두면 "판정 코드가 정답을 볼 수 있다"는 의심 자체가 생기지 않는다.
+
+```powershell
+python manage.py mark_graded --project 1
+```
+
+- `answer_key.json` 의 `items[].clause_no` 와 일치하는 `Requirement` 에 `is_graded=true`.
+- `reference_items` (4.1, 4.2, 5.1, 5.2) 는 켜지 않는다.
+- 일치하지 않는 `clause_no` 는 경고로 출력한다 (추출 누락 조기 발견).
+- **이 명령은 데모·테스트 준비용이다.** 다른 입찰 건에는 정답표가 없으므로
+  사용자가 FR-07 화면에서 직접 `채점대상` 토글로 지정한다.
+
+`is_graded` 는 어떤 프롬프트에도 들어가지 않는다 (`06-analysis-pipeline.md` 3.3 참조).
 
 ---
 
